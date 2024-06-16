@@ -1,10 +1,11 @@
-from flask_jwt_extended import create_access_token
-from flask import Blueprint,jsonify,request
+from flask_jwt_extended import create_access_token,create_refresh_token
+from flask import Blueprint,jsonify,make_response,request
 from sqlalchemy.exc import IntegrityError
 from flask_bcrypt import Bcrypt
 from database import engine
 from sqlalchemy import text
 import uuid
+from datetime import timedelta,datetime
 
 user_bp = Blueprint("user",__name__)
 bcrypt = Bcrypt()
@@ -102,13 +103,32 @@ def loginUser():
             if not valid_password:
                 return jsonify({"error": "Password incorrect!"}), 400
 
+            expires = datetime.utcnow() + timedelta(days=1)
             accessToken = create_access_token(identity=user["id"], additional_claims=user)
-
-            return jsonify({
-                "message":"User authenticated!",
-                "accessToken":accessToken,
-                "user":user
+            refreshToken = create_refresh_token(identity=user["id"], additional_claims=user)
+            
+            conn.execute(text("update user set refreshToken = :refreshToken where id = :id"),{
+                "refreshToken":refreshToken,
+                "id":user['id']
             })
+
+            conn.commit()
+            
+            
+            response = make_response({
+                "message":"User authenticated!",
+                "user":{
+                    "id": user["id"],
+                    "firstName": user["firstName"],
+                    "lastName": user["lastName"],
+                    "email": user["email"],
+                },
+                "accessToken":accessToken
+            })
+            response.set_cookie("jwt", refreshToken, expires=expires, max_age=86400, httponly=True, samesite='None', secure=True)
+            return response, 200
+
+
 
     except IntegrityError as e:
         print(e)
@@ -117,3 +137,17 @@ def loginUser():
     except Exception as e:
         print(e)
         return jsonify({"error": str(e)}), 500
+
+@user_bp.route("/showcookie",methods=["GET"])
+def refreshToken():
+    jwt = request.cookies.get("jwt")
+    if 'jwt' not in request.cookies:
+        return jsonify({"error":"Token missing"}),401
+    
+    with engine.connect() as conn:
+        result = conn.execute(text("select * from user where refreshToken = :refreshToken"),{"refreshToken":refreshToken})
+        
+        foundUser = result.fetchone()
+        if foundUser is None:
+            return jsonify({"error": "User not found!"}), 403
+        
