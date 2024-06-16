@@ -1,9 +1,10 @@
+from flask_jwt_extended import create_access_token
 from flask import Blueprint,jsonify,request
+from sqlalchemy.exc import IntegrityError
+from flask_bcrypt import Bcrypt
 from database import engine
 from sqlalchemy import text
-from flask_bcrypt import Bcrypt
 import uuid
-from sqlalchemy.exc import IntegrityError
 
 user_bp = Blueprint("user",__name__)
 bcrypt = Bcrypt()
@@ -71,4 +72,48 @@ def registerUser():
 
     except Exception as e:
         # ? This catch-all Exception block is meant to handle any other unforeseen errors that might occur during the execution of your code.
+        return jsonify({"error": str(e)}), 500
+
+@user_bp.route("/login", methods=["POST"])
+def loginUser():
+    data = request.get_json()
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        return jsonify({"error": "Please fill up the missing field!"}), 400
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("select * from user where email = :email"), {"email": email})
+            user_exists = result.fetchone()
+            if user_exists is None:
+                return jsonify({"error": "Email is not registered!"}), 400
+
+            user = {
+                "id": user_exists.id,
+                "firstName": user_exists.first_name,
+                "lastName": user_exists.last_name,
+                "email": user_exists.email,
+                "password": user_exists.password
+            }
+
+            valid_password = bcrypt.check_password_hash(user["password"], password)
+            if not valid_password:
+                return jsonify({"error": "Password incorrect!"}), 400
+
+            accessToken = create_access_token(identity=user["id"], additional_claims=user)
+
+            return jsonify({
+                "message":"User authenticated!",
+                "accessToken":accessToken,
+                "user":user
+            })
+
+    except IntegrityError as e:
+        print(e)
+        return jsonify({"error": "A user with this email already exists"}), 409
+
+    except Exception as e:
+        print(e)
         return jsonify({"error": str(e)}), 500
